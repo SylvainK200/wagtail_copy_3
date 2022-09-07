@@ -240,52 +240,18 @@ class BaseGroupCollectionMemberPermissionFormSet(forms.BaseFormSet):
 
     @transaction.atomic
     def save(self):
-        if self.instance.pk is None:
-            raise Exception(
-                "Cannot save a GroupCollectionMemberPermissionFormSet "
-                "for an unsaved group instance"
-            )
+        if not self.is_valid():
+            raise ValueError("The %s could not be saved because the data didn't validate." % self._meta.model.__name__)
 
-        # get a set of (collection, permission) tuples for all ticked permissions
-        forms_to_save = [
-            form
-            for form in self.forms
-            if form not in self.deleted_forms and "collection" in form.cleaned_data
-        ]
+        # delete any permissions that have been removed
+        for form in self.deleted_forms:
+            form.instance.delete()
 
-        final_permission_records = set()
-        for form in forms_to_save:
-            for permission in form.cleaned_data["permissions"]:
-                final_permission_records.add(
-                    (form.cleaned_data["collection"], permission)
-                )
+        # create/update permissions as appropriate
+        for form in self.forms:
+            if form.has_changed():
+                form.save()
 
-        # fetch the group's existing collection permission records for this model,
-        # and from that, build a list of records to be created / deleted
-        permission_ids_to_delete = []
-        permission_records_to_keep = set()
-
-        for cp in self.instance.collection_permissions.filter(
-            permission__in=self.permission_queryset,
-        ):
-            if (cp.collection, cp.permission) in final_permission_records:
-                permission_records_to_keep.add((cp.collection, cp.permission))
-            else:
-                permission_ids_to_delete.append(cp.id)
-
-        self.instance.collection_permissions.filter(
-            id__in=permission_ids_to_delete
-        ).delete()
-
-        permissions_to_add = final_permission_records - permission_records_to_keep
-        GroupCollectionPermission.objects.bulk_create(
-            [
-                GroupCollectionPermission(
-                    group=self.instance, collection=collection, permission=permission
-                )
-                for (collection, permission) in permissions_to_add
-            ]
-        )
 
     def as_admin_panel(self):
         return render_to_string(
