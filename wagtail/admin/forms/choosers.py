@@ -70,15 +70,18 @@ class SearchFilterMixin(forms.Form):
         widget=forms.TextInput(attrs={"placeholder": _("Search")}),
         required=False,
     )
-
+    
     def filter(self, objects):
-        objects = super().filter(objects)
-        search_query = self.cleaned_data.get("q")
+        search_query = self.cleaned_data["q"]
         if search_query:
-            search_backend = get_search_backend()
-            objects = search_backend.search(search_query, objects)
             self.is_searching = True
             self.search_query = search_query
+
+            # Get the search backend and run the search
+            backend = get_search_backend()
+            query = backend.search(search_query, objects)
+            return query
+
         return objects
 
 
