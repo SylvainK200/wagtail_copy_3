@@ -130,18 +130,30 @@ class PagesAdminAPIViewSet(PagesAPIViewSet):
         return response
 
     def action_view(self, request, pk, action_name):
-        instance = self.get_object()
-
+        """
+        This is called when an action is requested on a page. The action name is
+        passed in the URL as `action_name`. This method will then call the
+        appropriate action method on the page.
+        """
         if action_name not in self.actions:
-            raise Http404(f"unrecognised action '{action_name}'")
+            raise Http404
 
-        action = self.actions[action_name](self, request)
-        action_data = action.serializer(data=request.data)
+        page = self.get_object()
 
-        if not action_data.is_valid():
-            return Response(action_data.errors, status=400)
+        if not self.has_permission(request, action_name, page):
+            return self.permission_denied(request, message=getattr(self, 'permission_denied_message', None))
 
-        return action.execute(instance, action_data.data)
+        action = self.actions[action_name](page)
+        action.request = request
+
+        response = action.check()
+        if response:
+            return response
+
+        action.perform()
+
+        serializer = self.get_serializer(page)
+        return Response(serializer.data)
 
     @classmethod
     def get_urlpatterns(cls):
