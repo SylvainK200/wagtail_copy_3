@@ -37,64 +37,57 @@ class MovePageAction:
 
         # Determine old and new url_paths
         # Fetching new object to avoid affecting `page`
-        parent_before = page.get_parent()
-        old_page = Page.objects.get(id=page.id)
-        old_url_path = old_page.url_path
-        new_url_path = old_page.set_url_path(parent=parent_after)
-        url_path_changed = old_url_path != new_url_path
+        page = Page.objects.get(id=page.id)
+        old_url_path = page.url_path
+        old_depth = page.depth
 
-        # Emit pre_page_move signal
-        pre_page_move.send(
-            sender=page.specific_class or page.__class__,
-            instance=page,
-            parent_page_before=parent_before,
-            parent_page_after=parent_after,
-            url_path_before=old_url_path,
-            url_path_after=new_url_path,
+        # Fetching new object to avoid affecting `page`
+        page = Page.objects.get(id=page.id)
+        new_url_path = page.get_url_path(parent_after)
+
+        # Determine new depth
+        new_depth = len(new_url_path.split("/")) - 2
+
+        # Update the page's depth
+        page.depth = new_depth
+        page.save()
+
+        # Determine which pages need to be updated
+        pages_to_update = Page.objects.filter(
+            depth__gte=old_depth, url_path__startswith=old_url_path
         )
 
-        # Only commit when all descendants are properly updated
+        # Update url_paths and depths
+        for page_to_update in pages_to_update:
+            page_to_update.url_path = new_url_path + page_to_update.url_path[
+                len(old_url_path) :
+            ]
+            page_to_update.depth = new_depth + (page_to_update.depth - old_depth)
+            page_to_update.save()
+
+        # Move the page
         with transaction.atomic():
-            # Allow treebeard to update `path` values
-            MP_MoveHandler(page, target, self.pos).process()
+            pre_page_move.send(
+                sender=page.specific_class, instance=page, target=target, pos=self.pos
+            )
+            MP_MoveHandler().move(page, target, pos=self.pos)
+            post_page_move.send(
+                sender=page.specific_class, instance=page, target=target, pos=self.pos
+            )
 
-            # Treebeard's move method doesn't actually update the in-memory instance,
-            # so we need to work with a freshly loaded one now
-            new_page = Page.objects.get(id=page.id)
-            new_page.url_path = new_url_path
-            new_page.save()
-
-            # Update descendant paths if url_path has changed
-            if url_path_changed:
-                new_page._update_descendant_url_paths(old_url_path, new_url_path)
-
-        # Emit post_page_move signal
-        post_page_move.send(
-            sender=page.specific_class or page.__class__,
-            instance=new_page,
-            parent_page_before=parent_before,
-            parent_page_after=parent_after,
-            url_path_before=old_url_path,
-            url_path_after=new_url_path,
-        )
-
-        # Log
+        # Log the action
         log(
-            instance=page,
-            action="wagtail.move" if url_path_changed else "wagtail.reorder",
-            user=self.user,
-            data={
-                "source": {
-                    "id": parent_before.id,
-                    "title": parent_before.specific_deferred.get_admin_display_title(),
-                },
-                "destination": {
-                    "id": parent_after.id,
-                    "title": parent_after.specific_deferred.get_admin_display_title(),
-                },
+            "wagtail.pages.move",
+            pages={
+                "page": page.id,
+                "old_parent": page.get_parent().id,
+                "new_parent": parent_after.id,
             },
+            user=self.user,
         )
-        logger.info('Page moved: "%s" id=%d path=%s', page.title, page.id, new_url_path)
+
+        return page
+        
 
     def execute(self, skip_permission_checks=False):
         if self.pos in ("first-child", "last-child", "sorted-child"):
